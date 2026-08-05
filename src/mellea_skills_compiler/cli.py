@@ -1,16 +1,18 @@
 import signal
 import sys
+from logging import Logger
 from pathlib import Path
 from typing import Annotated, Literal, Optional
 
 import typer
+from typer.main import Typer
 
-from mellea_skills_compiler.enums import InferenceEngineType
+from mellea_skills_compiler.enums import GuardianMode, InferenceEngineType
 from mellea_skills_compiler.toolkit.logging import configure_logger
 
 
-app = typer.Typer(no_args_is_help=True)
-LOGGER = configure_logger()
+app: Typer = typer.Typer(no_args_is_help=True)
+LOGGER: Logger = configure_logger()
 
 
 def signal_handler(sig, frame):
@@ -35,7 +37,7 @@ def main() -> None:
 
 @app.command(
     help="Melleafy Compile: Decompose an Agent Spec into Mellea Code",
-    epilog="Compile Mellea skill specification into a Mellea pipeline using mellea-fy Claude command.",
+    epilog="Compile Mellea skill specification into a Mellea pipeline. Use --backend to select compilation backend (currently only 'claude' is supported).",
 )
 def compile(
     ctx: typer.Context,
@@ -46,7 +48,7 @@ def compile(
         ),
     ],
     model: Annotated[
-        str,
+        Optional[str],
         typer.Option(
             "--model",
             "-m",
@@ -99,6 +101,14 @@ def compile(
             "(default from mellea_skills_compiler/compile/claude/data/runtime_defaults.json).",
         ),
     ] = None,
+    backend: Annotated[
+        str,
+        typer.Option(
+            "--backend",
+            "-b",
+            help="Compilation backend to use. Currently only 'claude' is supported.",
+        ),
+    ] = "claude",
 ):
     """
     Compile Mellea skill specification into a Mellea pipeline using mellea-fy Claude command.
@@ -108,12 +118,11 @@ def compile(
     against the LLM backend. A green compile means compiled + lints passed +
     smoke-check passed (or skipped because backend was unreachable).
     """
-    spec_path = Path(spec_path)
     try:
         from mellea_skills_compiler.compile import mellea_skills
 
         mellea_skills.compile(
-            spec_path,
+            Path(spec_path),
             model,
             timeout,
             repair_mode=repair_mode,
@@ -121,6 +130,7 @@ def compile(
             refresh_cache=refresh_cache,
             skill_backend=skill_backend,
             skill_model=skill_model,
+            backend=backend,
         )
     except Exception as e:
         LOGGER.error(str(e))
@@ -181,7 +191,7 @@ def run(
             help="Compiled skill pipeline directory.",
         ),
     ],
-    fixture: Annotated[
+    fixture_id: Annotated[
         Optional[str],
         typer.Option(
             "-f",
@@ -213,7 +223,22 @@ def run(
             help="Skip Guardian checks even if a policy manifest exists.",
         ),
     ] = False,
-):
+    guardian_model: Annotated[
+        Optional[str],
+        typer.Option(
+            "--guardian-model",
+            help="Model to use for Risk Assessment. The `--inference-engine` option must support the model. If set to None, the default guardian model for the inference engine will be used.",
+        ),
+    ] = None,
+    inference_engine: Annotated[
+        Literal["ollama", "vllm"],
+        typer.Option(
+            "--inference-engine",
+            callback=lambda x: x.upper(),
+            help="Service to use for LLM inference. Supported: ollama",
+        ),
+    ] = "ollama",
+) -> None:
     """
     Run Mellea Skill Pipeline.
 
@@ -226,14 +251,17 @@ def run(
         from mellea_skills_compiler.certification.pipeline import run_pipeline
 
         run_pipeline(
-            Path(pipeline_dir),
-            fixture_id=fixture,
+            pipeline_dir=Path(pipeline_dir),
+            guardian_mode=GuardianMode(
+                "disabled" if no_guardian else ("enforce" if enforce else "audit")
+            ),
+            fixture_id=fixture_id,
             input=input,
-            enforce=enforce,
-            no_guardian=no_guardian,
+            guardian_model=guardian_model,
+            inference_engine_type=InferenceEngineType[inference_engine],
         )
     except Exception as e:
-        LOGGER.error(str(e))
+        LOGGER.error(f"Pipeline run command failed - {str(e)}")
         raise typer.Exit(code=1)
 
 
@@ -253,16 +281,15 @@ def ingest(
             "--dry-run", help="Preview without making LLM calls", show_default=True
         ),
     ] = False,
-    model: Annotated[
+    risk_model: Annotated[
         Optional[str],
         typer.Option(
-            "--model",
-            "-m",
+            "--risk-model",
             help="Model to use for Risk and Action Identification. The `--inference-engine` option must support the model. If set to None, the default model for the inference engine will be used.",
         ),
     ] = None,
     inference_engine: Annotated[
-        Literal["ollama"],
+        Literal["ollama", "vllm"],
         typer.Option(
             "--inference-engine",
             "-i",
@@ -270,7 +297,7 @@ def ingest(
             help="Service to use for LLM inference. Supported: ollama",
         ),
     ] = "ollama",
-):
+) -> None:
     """
     Run risk analysis on a skill specification.
 
@@ -281,13 +308,13 @@ def ingest(
         from mellea_skills_compiler.certification.ingest import ingest_one
 
         ingest_one(
-            Path(spec_path),
-            dry_run,
-            model,
-            InferenceEngineType[inference_engine],
+            spec_path=Path(spec_path),
+            dry_run=dry_run,
+            risk_model=risk_model,
+            inference_engine_type=InferenceEngineType[inference_engine],
         )
     except Exception as e:
-        LOGGER.error(str(e))
+        LOGGER.error(f"Ingest command failed - {str(e)}")
         raise typer.Exit(code=1)
 
 
@@ -301,14 +328,13 @@ def certify(
             rich_help_panel="Arguments",
         ),
     ],
-    fixture: Annotated[
-        Optional[str],
+    n_fixtures: Annotated[
+        int,
         typer.Option(
-            "--fixture",
-            "-f",
-            help="Run pipeline for a specific fixture.",
+            "-n",
+            help="Number of fixtures to evaluate.",
         ),
-    ] = None,
+    ] = 3,
     enforce: Annotated[
         bool,
         typer.Option(
@@ -317,11 +343,10 @@ def certify(
             help="Run pipeline in enforce mode (block on risk detection)",
         ),
     ] = False,
-    model: Annotated[
+    risk_model: Annotated[
         Optional[str],
         typer.Option(
-            "--model",
-            "-m",
+            "--risk-model",
             help="Model to use for Risk and Action Identification. The `--inference-engine` option must support the model. If set to None, the default model for the inference engine will be used.",
         ),
     ] = None,
@@ -329,20 +354,18 @@ def certify(
         Optional[str],
         typer.Option(
             "--guardian-model",
-            "-g",
             help="Model to use for Risk Assessment. The `--inference-engine` option must support the model. If set to None, the default guardian model for the inference engine will be used.",
         ),
     ] = None,
     inference_engine: Annotated[
-        Literal["ollama"],
+        Literal["ollama", "vllm"],
         typer.Option(
             "--inference-engine",
-            "-i",
             callback=lambda x: x.upper(),
             help="Service to use for LLM inference. Supported: ollama",
         ),
     ] = "ollama",
-):
+) -> None:
     """
     Run full certification pipeline on a compiled skill.
 
@@ -353,12 +376,12 @@ def certify(
         from mellea_skills_compiler.certification.pipeline import full_pipeline
 
         full_pipeline(
-            Path(pipeline_dir),
-            fixture,
-            enforce,
-            model,
-            guardian_model,
-            InferenceEngineType[inference_engine],
+            pipeline_dir=Path(pipeline_dir),
+            guardian_mode=GuardianMode("enforce" if enforce else "audit"),
+            n_fixtures=n_fixtures,
+            risk_model=risk_model,
+            guardian_model=guardian_model,
+            inference_engine_type=InferenceEngineType[inference_engine],
         )
     except Exception as e:
         LOGGER.error(f"Certify command failed - {str(e)}")
@@ -431,7 +454,7 @@ def export(
     except SystemExit:
         raise
     except Exception as e:
-        LOGGER.error(str(e))
+        LOGGER.error(f"Export command failed - {str(e)}")
         raise typer.Exit(code=1)
 
 

@@ -192,13 +192,18 @@ def stage2_load(inv: Invocation, manifest: dict) -> LoadedContext:
         python_package_dir = skill_root
         supporting_asset_dirs = []
 
-    # Policy manifest (optional)
-    policy_manifest_path = None
-    audit_dirs = list(skill_root.parent.glob("audit_*"))
-    for audit_dir in reversed(audit_dirs):
-        if (audit_dir / "policy_manifest.json").exists():
-            policy_manifest_path = audit_dir / "policy_manifest.json"
-            break
+    # Policy manifest (optional) — check the skill dir itself first, then any
+    # audit_* sibling directories produced by the certify command.
+    policy_manifest_path: Optional[Path] = None
+    if (skill_root / "policy_manifest.json").exists():
+        policy_manifest_path = skill_root / "policy_manifest.json"
+    else:
+        audit_parent: Path = Path(skill_root.parent / "audit")
+        if audit_parent.exists():
+            for audit_dir in reversed(list(audit_parent.glob("*"))):
+                if (audit_dir / "policy_manifest.json").exists():
+                    policy_manifest_path = audit_dir / "policy_manifest.json"
+                    break
 
     return LoadedContext(
         invocation=inv,
@@ -411,9 +416,9 @@ def _build_reverse_manifest(plan: TranslationPlan, loaded: LoadedContext) -> dic
         "warnings": plan.warnings + loaded.load_warnings,
         "policy_manifest_bundled": loaded.policy_manifest_path is not None,
         "guardian_configured": (
-            "enforce" if loaded.policy_manifest_path is not None and loaded.invocation.enforce
-            else "audit" if loaded.policy_manifest_path is not None
-            else False
+            "enforce"
+            if loaded.policy_manifest_path is not None and loaded.invocation.enforce
+            else "audit" if loaded.policy_manifest_path is not None else False
         ),
     }
 
@@ -454,7 +459,7 @@ def _build_export_notes(plan: TranslationPlan, loaded: LoadedContext) -> str:
         next_steps = [
             "1. Review `graph.py` — the generated node calls `run_pipeline` directly.",
             f"2. {install_step}",
-            "3. Invoke: `python -c \"from graph import graph; print(graph.invoke({'input': {}})['output'])\"`",
+            "3. Invoke: `python -c \"import asyncio; from graph import graph; print(asyncio.run(graph.ainvoke({'input': {}}))['output'])\"`",
             "4. For LangGraph Platform: deploy using `langgraph.json`.",
         ]
     elif target == "mcp":
@@ -481,19 +486,27 @@ def _build_export_notes(plan: TranslationPlan, loaded: LoadedContext) -> str:
         mode_note = (
             "**Mode**: enforce — risky operations will be **blocked** at runtime with a `PluginViolationError`. "
             "To switch to audit-only (observe but do not block), re-export without `--enforce`."
-            if loaded.invocation.enforce else
-            "**Mode**: audit — Guardian observes and logs but does not block operations."
+            if loaded.invocation.enforce
+            else "**Mode**: audit — Guardian observes and logs but does not block operations."
         )
+        if target == "claude-code":
+            audit_path_line = "- **Audit log**: `$ADAPTER_DIR/audit/runtime_audit.jsonl` (defaults to `./audit` if `ADAPTER_DIR` is unset)."
+            audit_cmd_line = '  `mkdir -p "$ADAPTER_DIR/audit"` (or `mkdir -p ./audit` if `ADAPTER_DIR` is unset)'
+        else:
+            audit_path_line = "- **Audit log**: `<bundle_dir>/audit/runtime_audit.jsonl`."
+            audit_cmd_line = "  `mkdir -p <bundle_dir>/audit`"
         lines += [
             "## Guardian audit",
             "",
             f"This bundle was exported from a certified skill. Guardian {mode}-mode is active.",
             "",
             f"- {mode_note}",
-            "- **Audit log**: `<bundle_dir>/audit/runtime_audit.jsonl`",
-            "- **Write access**: the process running the entry point must have write permission to the"
-            " `audit/` directory adjacent to the bundle. Create it if it does not exist:",
-            "  `mkdir -p <bundle_dir>/audit`",
+            audit_path_line,
+            "- **Write access**: the process running the entry point must have write permission to this"
+            " directory. Create it if it does not exist:",
+            audit_cmd_line,
+            "- If the directory does not exist or isn't writable, the entry point will **fail at"
+            " startup** (a loud, non-zero-exit error) rather than silently losing audit evidence.",
             "- To suppress Guardian at runtime, remove `policy_manifest.json` from the bundle directory.",
             "",
         ]
@@ -612,10 +625,10 @@ def stage5_lint(
         entry_file = entry_files.get(target)
         if entry_file and entry_file.exists():
             content = entry_file.read_text()
-            if "GuardianAuditPlugin" not in content and "GuardianEnforcePlugin" not in content:
+            if "GuardianPluginFactory" not in content:
                 failures.append(
                     f"{entry_file.name}: policy_manifest.json present but "
-                    f"no Guardian plugin found in generated entry point"
+                    f"no Guardian plugin factory found in generated entry point"
                 )
 
     pkg_dir = result.out_path / plan.bundled_package_name
