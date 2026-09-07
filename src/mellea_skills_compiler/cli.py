@@ -33,7 +33,7 @@ def _profile_if_enabled(func: F) -> F:
     to stdout after the command completes.
 
     Example:
-        MELLEA_PROFILE=1 mellea-skills-compiler compile spec.yaml
+        MELLEA_PROFILE=1 mellea-skills compile spec.yaml
     """
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
