@@ -69,7 +69,8 @@ class TestThunkActionAccess:
 class TestIdCorrelation:
     """Requirement-driven generations are skipped via generation_id, not private attrs."""
 
-    def test_pre_call_records_requirement_generation_id(self, audit_plugin):
+    @pytest.mark.asyncio
+    async def test_pre_call_records_requirement_generation_id(self, audit_plugin):
         from mellea.core.requirement import Requirement
 
         req = Requirement(description="must be nice")
@@ -79,12 +80,13 @@ class TestIdCorrelation:
         )
         from mellea_skills_compiler.plugins import guardian as gmod
 
-        gmod._run_guardian_pre_checks(
+        await gmod._run_guardian_pre_checks(
             audit_plugin, payload, audit_plugin.risks, "ollama"
         )
         assert "gen-abc" in audit_plugin._requirement_generation_ids
 
-    def test_post_call_skips_recorded_id_without_reading_action(self, audit_plugin):
+    @pytest.mark.asyncio
+    async def test_post_call_skips_recorded_id_without_reading_action(self, audit_plugin):
         from mellea_skills_compiler.plugins import guardian as gmod
 
         audit_plugin._requirement_generation_ids.add("gen-xyz")
@@ -97,13 +99,14 @@ class TestIdCorrelation:
             generation_id="gen-xyz",
             prompt="what?",
         )
-        result = gmod._run_guardian_post_checks(
+        result = await gmod._run_guardian_post_checks(
             audit_plugin, payload, audit_plugin.risks, "ollama"
         )
         assert result == []
         assert "gen-xyz" not in audit_plugin._requirement_generation_ids
 
-    def test_post_call_falls_back_to_action_check_when_id_absent(self, audit_plugin):
+    @pytest.mark.asyncio
+    async def test_post_call_falls_back_to_action_check_when_id_absent(self, audit_plugin):
         """Belt-and-braces: pre-0.7 payloads with no generation_id still skip Requirements."""
         from mellea.core.requirement import Requirement
         from mellea_skills_compiler.plugins import guardian as gmod
@@ -113,7 +116,7 @@ class TestIdCorrelation:
         payload = SimpleNamespace(
             model_output=model_output, generation_id=None, prompt=""
         )
-        result = gmod._run_guardian_post_checks(
+        result = await gmod._run_guardian_post_checks(
             audit_plugin, payload, audit_plugin.risks, "ollama"
         )
         assert result == []

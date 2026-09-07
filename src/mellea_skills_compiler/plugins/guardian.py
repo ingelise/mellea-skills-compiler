@@ -250,9 +250,24 @@ async def _call_guardian(
         for r in risks
     ]
 
+def _get_thunk_action(model_output: Any) -> Any:
+    """Return the originating action of a ``ModelOutputThunk``, or ``None``.
+
+    On mellea 0.7+ the action lives at ``thunk._call.action`` (see
+    ``_CallInfo`` in ``mellea/core/base.py``); on <0.7 it was on
+    ``thunk._action``. Both paths are private, but the dual accessor lets
+    us survive the rename without wire-level knowledge of which mellea we
+    are running against. This is a fallback for the id-correlation path
+    below — if ``payload.generation_id`` is populated (0.7+) we prefer
+    that.
+    """
+    call = getattr(model_output, "_call", None)
+    if call is not None:
+        return getattr(call, "action", None)
+    return getattr(model_output, "_action", None)
 
 async def _run_guardian_post_checks(
-    payload: Any, risks: List[NexusRisk], inference_engine: str
+    plugin, payload: Any, risks: List[NexusRisk], inference_engine: str
 ) -> List[GuardianVerdict]:
     """Shared logic: run Guardian checks and return (verdicts, flagged_labels).
 
@@ -323,7 +338,7 @@ async def _run_guardian_post_checks(
 
 
 async def _run_guardian_pre_checks(
-    payload: Any, risks: List[NexusRisk], inference_engine: str
+    plugin, payload: Any, risks: List[NexusRisk], inference_engine: str
 ) -> List[GuardianVerdict]:
     """Pre-generation check: assess the input prompt before LLM generation.
 
@@ -487,13 +502,13 @@ class GuardianAuditPlugin(
     @hook(HookType.GENERATION_PRE_CALL, mode=PluginMode.AUDIT)
     async def check_input(self, payload: Any, ctx: Any) -> None:
         """Pre-generation: assess input prompt for risks (observe-only)."""
-        verdicts = await _run_guardian_pre_checks(payload, self.risks, self.inference_engine)
+        verdicts = await _run_guardian_pre_checks(self, payload, self.risks, self.inference_engine)
         self.all_verdicts.extend(verdicts)
 
     @hook(HookType.GENERATION_POST_CALL, mode=PluginMode.AUDIT)
     async def check_output(self, payload: Any, ctx: Any) -> None:
         """Post-generation: assess LLM output for risks (observe-only)."""
-        verdicts = await _run_guardian_post_checks(payload, self.risks, self.inference_engine)
+        verdicts = await _run_guardian_post_checks(self, payload, self.risks, self.inference_engine)
         self.all_verdicts.extend(verdicts)
 
     @hook(HookType.TOOL_PRE_INVOKE, mode=PluginMode.AUDIT)
@@ -554,6 +569,66 @@ class GuardianAuditPlugin(
                 )
                 console.print()
 
+    @hook(HookType.GENERATION_ERROR, mode=PluginMode.AUDIT)
+    async def check_error(self, payload: Any, ctx: Any) -> None:
+        """Generation error: record an ERROR verdict per risk (observe-only)."""
+        generation_id = getattr(payload, "generation_id", None)
+        verdicts = [
+            GuardianVerdict(
+                risk=risk.name,
+                label=GuardianScore.ERROR,
+                raw_output=str(getattr(payload, "error", "")),
+                hook_stage=HookStage.POST,
+            )
+            for risk in self.risks
+        ]
+        self._record_verdicts(verdicts, generation_id)
+
+    @hook(HookType.GENERATION_BATCH_PRE_CALL, mode=PluginMode.AUDIT)
+    async def check_batch_input(self, payload: Any, ctx: Any) -> None:
+        """Pre-batch generation: observed only."""
+        return None
+
+    @hook(HookType.GENERATION_BATCH_POST_CALL, mode=PluginMode.AUDIT)
+    async def check_batch_output(self, payload: Any, ctx: Any) -> None:
+        """Post-batch generation: assess each item and record verdicts (observe-only)."""
+        model_outputs = getattr(payload, "model_outputs", None) or []
+        generation_ids = getattr(payload, "generation_ids", None) or [None] * len(
+            model_outputs
+        )
+        prompts = getattr(payload, "prompts", None) or [""] * len(model_outputs)
+        for model_output, gen_id, prompt in zip(model_outputs, generation_ids, prompts):
+            if model_output is None:
+                continue
+            assistant_text = getattr(model_output, "value", None)
+            if assistant_text is None or assistant_text == "":
+                continue
+            input_text = str(prompt) if prompt else ""
+            verdicts = await _call_guardian(
+                HookStage.POST,
+                self.risks,
+                input_text,
+                self.inference_engine,
+                assistant_text,
+            )
+            self._record_verdicts(verdicts, gen_id)
+
+    @hook(HookType.GENERATION_BATCH_ERROR, mode=PluginMode.AUDIT)
+    async def check_batch_error(self, payload: Any, ctx: Any) -> None:
+        """Batch generation error: record ERROR verdicts (observe-only)."""
+        generation_ids = getattr(payload, "generation_ids", None) or [None]
+        for gen_id in generation_ids:
+            verdicts = [
+                GuardianVerdict(
+                    risk=risk.name,
+                    label=GuardianScore.ERROR,
+                    raw_output=str(getattr(payload, "error", "")),
+                    hook_stage=HookStage.POST,
+                )
+                for risk in self.risks
+            ]
+            self._record_verdicts(verdicts, gen_id)
+
 
 class GuardianEnforcePlugin(
     GuardianPlugin, Plugin, name="granite-guardian-enforce", priority=40
@@ -578,7 +653,7 @@ class GuardianEnforcePlugin(
     async def enforce_input(self, payload: Any, ctx: Any) -> Any:
         """Pre-generation: block if input prompt has risks."""
         verdicts: List[GuardianVerdict] = await _run_guardian_pre_checks(
-            payload, self.risks, self.inference_engine
+            self, payload, self.risks, self.inference_engine
         )
         self._record_verdicts(verdicts, getattr(payload, "generation_id", None))
 
@@ -615,7 +690,7 @@ class GuardianEnforcePlugin(
     @hook(HookType.GENERATION_POST_CALL, mode=PluginMode.SEQUENTIAL)
     async def enforce_output(self, payload: Any, ctx: Any) -> Any:
         """Post-generation: block if LLM output has risks."""
-        verdicts = await _run_guardian_post_checks(payload, self.risks, self.inference_engine)
+        verdicts = await _run_guardian_post_checks(self, payload, self.risks, self.inference_engine)
         self.all_verdicts.extend(verdicts)
 
         flagged = [v.risk for v in verdicts if v.label == GuardianScore.YES]
@@ -817,7 +892,7 @@ class GuardianEnforcePlugin(
             if assistant_text is None or assistant_text == "":
                 continue
             input_text = str(prompt) if prompt else ""
-            verdicts = _call_guardian(
+            verdicts = await _call_guardian(
                 HookStage.POST,
                 self.risks,
                 input_text,
