@@ -23,10 +23,8 @@ Usage (enforce mode — blocks on risk):
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import threading
-from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 from mellea.core.requirement import Requirement
@@ -44,6 +42,7 @@ from mellea_skills_compiler.enums import (
 )
 from mellea_skills_compiler.models import GuardianVerdict, NexusRisk
 from mellea_skills_compiler.plugins import BasePlugin
+from mellea_skills_compiler.toolkit.cache_strategy import LRUCache, hash_key
 from mellea_skills_compiler.toolkit.logging import configure_logger
 
 
@@ -54,8 +53,7 @@ GUARDIAN_MAX_CONCURRENCY = 4
 GUARDIAN_CACHE_MAXSIZE = 512
 
 _GUARDIAN_SEMAPHORE = threading.Semaphore(GUARDIAN_MAX_CONCURRENCY)
-_VERDICT_CACHE: OrderedDict[tuple, GuardianVerdict] = OrderedDict()
-_CACHE_LOCK = threading.Lock()
+_VERDICT_CACHE = LRUCache(maxsize=GUARDIAN_CACHE_MAXSIZE)
 
 
 def _blocking_chat(inference_engine, messages_batch):
@@ -64,25 +62,8 @@ def _blocking_chat(inference_engine, messages_batch):
 
 
 def _cache_key(risk_name: str, judged_text: str, stage: HookStage) -> tuple:
-    digest = hashlib.sha256(judged_text.encode("utf-8")).hexdigest()
+    digest = hash_key(judged_text)
     return (risk_name, digest, stage)
-
-
-def _cache_get(risk_name: str, judged_text: str, stage: HookStage) -> Optional[GuardianVerdict]:
-    key = _cache_key(risk_name, judged_text, stage)
-    with _CACHE_LOCK:
-        return _VERDICT_CACHE.get(key)
-
-
-def _cache_set(risk_name: str, judged_text: str, stage: HookStage, verdict: GuardianVerdict) -> None:
-    key = _cache_key(risk_name, judged_text, stage)
-    with _CACHE_LOCK:
-        if key in _VERDICT_CACHE:
-            _VERDICT_CACHE.move_to_end(key)
-        else:
-            if len(_VERDICT_CACHE) >= GUARDIAN_CACHE_MAXSIZE:
-                _VERDICT_CACHE.popitem(last=False)
-            _VERDICT_CACHE[key] = verdict
 
 
 def _parse_guardian_score(text: str) -> str:
@@ -165,7 +146,7 @@ async def _call_guardian(
     messages_to_query = []
 
     for risk in risks:
-        cached = _cache_get(risk.name, judged_text, hook_stage)
+        cached = _VERDICT_CACHE.get(_cache_key(risk.name, judged_text, hook_stage))
         if cached:
             cached_verdicts[risk.name] = cached
         else:
@@ -213,7 +194,7 @@ async def _call_guardian(
                 )
                 verdicts_by_name[risk.name] = verdict
                 if label in [GuardianScore.YES, GuardianScore.NO]:
-                    _cache_set(risk.name, judged_text, hook_stage, verdict)
+                    _VERDICT_CACHE.set(_cache_key(risk.name, judged_text, hook_stage), verdict)
 
         # Concurrent retries for failed predictions
         if failed_indices:
@@ -237,7 +218,7 @@ async def _call_guardian(
             for verdict in latest_by_idx.values():
                 verdicts_by_name[verdict.risk] = verdict
                 if verdict.label in [GuardianScore.YES, GuardianScore.NO]:
-                    _cache_set(verdict.risk, judged_text, hook_stage, verdict)
+                    _VERDICT_CACHE.set(_cache_key(verdict.risk, judged_text, hook_stage), verdict)
 
     # Apply name_prefix and return in original risk order
     return [
