@@ -49,16 +49,9 @@ from mellea_skills_compiler.toolkit.logging import configure_logger
 LOGGER = configure_logger()
 console = Console()
 GUARDIAN_RETRY_ATTEMPTS = 2
-GUARDIAN_MAX_CONCURRENCY = 4
 GUARDIAN_CACHE_MAXSIZE = 512
 
-_GUARDIAN_SEMAPHORE = threading.Semaphore(GUARDIAN_MAX_CONCURRENCY)
 _VERDICT_CACHE = LRUCache(maxsize=GUARDIAN_CACHE_MAXSIZE)
-
-
-def _blocking_chat(inference_engine, messages_batch):
-    with _GUARDIAN_SEMAPHORE:
-        return inference_engine.chat(messages_batch, verbose=False)
 
 
 def _cache_key(risk_name: str, judged_text: str, stage: HookStage) -> tuple:
@@ -78,28 +71,42 @@ def _parse_guardian_score(text: str) -> str:
     return GuardianScore.FAILED
 
 
-async def _retry_one(risk_name: str, messages: List, inference_engine, hook_stage: HookStage) -> GuardianVerdict:
-    """Retry a single failed verdict concurrently."""
-    preview_source = messages[-1]["content"] if messages[-1]["role"] == "assistant" else messages[-1]["content"] if messages[-1]["role"] == "user" else ""
-    preview = preview_source.replace("\n", " ")[0:90]
-    console.print(
-        f'[white]  risk={messages[0]["content"]}\n  preview={preview}[/]'
-    )
+async def _query_batch(
+    risks: List[NexusRisk],
+    messages_list: List[List[Dict[str, str]]],
+    inference_engine,
+    hook_stage: HookStage,
+) -> Dict[str, GuardianVerdict]:
+    """Run one batched Guardian call for ``risks``.
 
+    Nexus's ``inference_engine.chat()`` already has a concurrent batch API
+    so this is a single call regardless of how many risks are in the batch.
+
+    ERROR /FAILED are treated as retryable.
+    """
     try:
-        raw_prediction = (await asyncio.to_thread(_blocking_chat, inference_engine, [messages]))[0].prediction
-        label = _parse_guardian_score(raw_prediction)
+        raw_predictions = [
+            prediction.prediction
+            for prediction in await asyncio.to_thread(inference_engine.chat, messages_list, verbose=False)
+        ]
     except Exception as e:
-        LOGGER.warning("Guardian call failed for risk=%s: %s", risk_name, e)
-        label = GuardianScore.ERROR
-        raw_prediction = ""
+        LOGGER.warning("Guardian call failed for risks=%s: %s", [r.name for r in risks], e)
+        return {
+            risk.name: GuardianVerdict(
+                risk=risk.name, label=GuardianScore.ERROR, raw_output="", hook_stage=hook_stage
+            )
+            for risk in risks
+        }
 
-    return GuardianVerdict(
-        risk=risk_name,
-        label=label,
-        raw_output=raw_prediction,
-        hook_stage=hook_stage,
-    )
+    return {
+        risk.name: GuardianVerdict(
+            risk=risk.name,
+            label=_parse_guardian_score(raw_prediction),
+            raw_output=raw_prediction,
+            hook_stage=hook_stage,
+        )
+        for risk, raw_prediction in zip(risks, raw_predictions)
+    }
 
 
 async def _call_guardian(
@@ -161,66 +168,40 @@ async def _call_guardian(
     # Batch query for cache misses
     verdicts_by_name = dict(cached_verdicts)
     if risks_to_query:
-        try:
-            raw_predictions = [
-                raw_prediction.prediction
-                for raw_prediction in await asyncio.to_thread(_blocking_chat, inference_engine, messages_to_query)
-            ]
-        except Exception as e:
-            LOGGER.warning("Guardian call failed for risks=%s: %s", [r.name for r in risks_to_query], e)
-            for risk in risks_to_query:
-                verdict = GuardianVerdict(
-                    risk=risk.name,
-                    label=GuardianScore.ERROR,
-                    raw_output="",
-                    hook_stage=hook_stage,
-                )
-                verdicts_by_name[risk.name] = verdict
-            raw_predictions = [GuardianScore.ERROR] * len(risks_to_query)
+        # Initial batched query, do one call for all cache misses
+        verdicts = await _query_batch(risks_to_query, messages_to_query, inference_engine, hook_stage)
+        verdicts_by_name.update(verdicts)
 
-        # Parse predictions and collect failures for retry
-        failed_indices = []
-        for idx, (risk, messages, raw_prediction) in enumerate(zip(risks_to_query, messages_to_query, raw_predictions)):
-            label = _parse_guardian_score(raw_prediction)
+        failed_by_idx = {
+            idx: risk
+            for idx, risk in enumerate(risks_to_query)
+            if verdicts[risk.name].label == GuardianScore.FAILED
+        }
 
-            if label == GuardianScore.FAILED:
-                failed_indices.append(idx)
-            else:
-                verdict = GuardianVerdict(
-                    risk=risk.name,
-                    label=label,
-                    raw_output=raw_prediction,
-                    hook_stage=hook_stage,
-                )
-                verdicts_by_name[risk.name] = verdict
-                if label in [GuardianScore.YES, GuardianScore.NO]:
-                    _VERDICT_CACHE.set(_cache_key(risk.name, judged_text, hook_stage), verdict)
+        for attempt in range(GUARDIAN_RETRY_ATTEMPTS - 1):
+            if not failed_by_idx:
+                break
 
-        # Concurrent retries for failed predictions
-        if failed_indices:
-            retry_tasks = [
-                _retry_one(risks_to_query[idx].name, messages_to_query[idx], inference_engine, hook_stage)
-                for idx in failed_indices
-            ]
-            latest_by_idx = dict(zip(failed_indices, await asyncio.gather(*retry_tasks)))
+            for risk in failed_by_idx.values():
+                LOGGER.warning(f"Retrying failed guardian assessment - {risk.name}...attempt: {attempt + 2}")
 
-            for attempt in range(GUARDIAN_RETRY_ATTEMPTS - 1):
-                still_failed = [idx for idx, v in latest_by_idx.items() if v.label == GuardianScore.FAILED]
-                if not still_failed:
-                    break
-                retry_tasks = []
-                for idx in still_failed:
-                    LOGGER.warning(f"Retrying failed guardian assessment - {risks_to_query[idx].name}...attempt: {attempt + 2}")
-                    retry_tasks.append(_retry_one(risks_to_query[idx].name, messages_to_query[idx], inference_engine, hook_stage))
-                for idx, v in zip(still_failed, await asyncio.gather(*retry_tasks)):
-                    latest_by_idx[idx] = v
+            # Build messages for failed risks only
+            failed_risks = [failed_by_idx[idx] for idx in sorted(failed_by_idx.keys())]
+            failed_messages = [messages_to_query[idx] for idx in sorted(failed_by_idx.keys())]
 
-            for verdict in latest_by_idx.values():
-                verdicts_by_name[verdict.risk] = verdict
-                if verdict.label in [GuardianScore.YES, GuardianScore.NO]:
-                    _VERDICT_CACHE.set(_cache_key(verdict.risk, judged_text, hook_stage), verdict)
+            # One batched call for all remaining failures 
+            retry_verdicts = await _query_batch(failed_risks, failed_messages, inference_engine, hook_stage)
+            verdicts_by_name.update(retry_verdicts)
 
-    # Apply name_prefix and return in original risk order
+            failed_by_idx = {
+                idx: risk for idx, risk in failed_by_idx.items() if retry_verdicts[risk.name].label == GuardianScore.FAILED
+            }
+
+        # Cache all terminal verdicts (YES/NO/ERROR after retries)
+        for risk_name, verdict in verdicts_by_name.items():
+            if verdict.label in [GuardianScore.YES, GuardianScore.NO]:
+                _VERDICT_CACHE.set(_cache_key(risk_name, judged_text, hook_stage), verdict)
+
     return [
         GuardianVerdict(
             risk=f"{name_prefix}{verdicts_by_name[r.name].risk}",
