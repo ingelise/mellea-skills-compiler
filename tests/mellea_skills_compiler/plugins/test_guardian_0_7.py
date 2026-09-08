@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -136,6 +136,44 @@ class TestRecordVerdictsIndexing:
         audit_plugin._record_verdicts([v], generation_id=None)
         assert v in audit_plugin.all_verdicts
         assert audit_plugin.verdicts_by_generation_id == {}
+
+
+class TestObserveOnlyHooksIndexByGenerationId:
+    """Regression for the 3-site bug: check_input/check_output/enforce_output
+    must route through _record_verdicts, not a raw unlocked .extend()."""
+
+    @pytest.mark.asyncio
+    async def test_check_input_indexes_verdicts_by_generation_id(self, audit_plugin):
+        from mellea_skills_compiler.plugins import guardian as gmod
+
+        v = GuardianVerdict(risk="harm", label=GuardianScore.YES, raw_output="in", hook_stage=HookStage.PRE)
+        payload = SimpleNamespace(generation_id="gen-ci")
+        with patch.object(gmod, "_run_guardian_pre_checks", new=AsyncMock(return_value=[v])):
+            await audit_plugin.check_input(payload, ctx=None)
+        assert v in audit_plugin.all_verdicts
+        assert audit_plugin.verdicts_by_generation_id.get("gen-ci") == [v]
+
+    @pytest.mark.asyncio
+    async def test_check_output_indexes_verdicts_by_generation_id(self, audit_plugin):
+        from mellea_skills_compiler.plugins import guardian as gmod
+
+        v = GuardianVerdict(risk="harm", label=GuardianScore.YES, raw_output="out", hook_stage=HookStage.POST)
+        payload = SimpleNamespace(generation_id="gen-co")
+        with patch.object(gmod, "_run_guardian_post_checks", new=AsyncMock(return_value=[v])):
+            await audit_plugin.check_output(payload, ctx=None)
+        assert v in audit_plugin.all_verdicts
+        assert audit_plugin.verdicts_by_generation_id.get("gen-co") == [v]
+
+    @pytest.mark.asyncio
+    async def test_enforce_output_indexes_verdicts_by_generation_id(self, enforce_plugin):
+        from mellea_skills_compiler.plugins import guardian as gmod
+
+        v = GuardianVerdict(risk="harm", label=GuardianScore.NO, raw_output="out", hook_stage=HookStage.POST)
+        payload = SimpleNamespace(generation_id="gen-eo")
+        with patch.object(gmod, "_run_guardian_post_checks", new=AsyncMock(return_value=[v])):
+            await enforce_plugin.enforce_output(payload, ctx=None)
+        assert v in enforce_plugin.all_verdicts
+        assert enforce_plugin.verdicts_by_generation_id.get("gen-eo") == [v]
 
 
 class TestConcurrency:

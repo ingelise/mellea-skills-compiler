@@ -465,13 +465,13 @@ class GuardianAuditPlugin(
     async def check_input(self, payload: Any, ctx: Any) -> None:
         """Pre-generation: assess input prompt for risks (observe-only)."""
         verdicts = await _run_guardian_pre_checks(self, payload, self.risks, self.inference_engine)
-        self.all_verdicts.extend(verdicts)
+        self._record_verdicts(verdicts, getattr(payload, "generation_id", None))
 
     @hook(HookType.GENERATION_POST_CALL, mode=PluginMode.AUDIT)
     async def check_output(self, payload: Any, ctx: Any) -> None:
         """Post-generation: assess LLM output for risks (observe-only)."""
         verdicts = await _run_guardian_post_checks(self, payload, self.risks, self.inference_engine)
-        self.all_verdicts.extend(verdicts)
+        self._record_verdicts(verdicts, getattr(payload, "generation_id", None))
 
     @hook(HookType.TOOL_PRE_INVOKE, mode=PluginMode.AUDIT)
     async def check_tool_input(self, payload: Any, ctx: Any) -> None:
@@ -653,7 +653,7 @@ class GuardianEnforcePlugin(
     async def enforce_output(self, payload: Any, ctx: Any) -> Any:
         """Post-generation: block if LLM output has risks."""
         verdicts = await _run_guardian_post_checks(self, payload, self.risks, self.inference_engine)
-        self.all_verdicts.extend(verdicts)
+        self._record_verdicts(verdicts, getattr(payload, "generation_id", None))
 
         flagged = [v.risk for v in verdicts if v.label == GuardianScore.YES]
         failed = [
