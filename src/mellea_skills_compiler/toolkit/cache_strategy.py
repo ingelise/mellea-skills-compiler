@@ -33,10 +33,14 @@ class LRUCache:
     def get(self, key: Any) -> Optional[Any]:
         """Get a value from the cache by key.
 
-        Returns None if not found.
+        Returns None if not found. Accessing an existing key promotes it
+        to the end (most recently used).
         """
         with self._lock:
-            return self._cache.get(key)
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                return self._cache[key]
+            return None
 
     def set(self, key: Any, value: Any) -> None:
         """Set a key-value pair in the cache.

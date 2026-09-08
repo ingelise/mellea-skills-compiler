@@ -59,15 +59,15 @@ class TestLRUCache:
         assert cache.get("key2") == "value2"
         assert cache.get("key3") == "value3"
 
-    def test_get_does_not_promote(self):
-        """Reading a key does not promote it (no move-to-end on get)."""
+    def test_get_promotes(self):
+        """Reading a key promotes it to most recently used."""
         cache = LRUCache(maxsize=2)
         cache.set("key1", "value1")
         cache.set("key2", "value2")
-        _ = cache.get("key1")  # Read doesn't promote
-        cache.set("key3", "value3")  # Should evict key1 (oldest by insertion order)
-        assert cache.get("key1") is None  # key1 was evicted
-        assert cache.get("key2") == "value2"
+        _ = cache.get("key1")  # Read promotes key1
+        cache.set("key3", "value3")  # Should evict key2 (oldest), not key1
+        assert cache.get("key1") == "value1"  # key1 was promoted and retained
+        assert cache.get("key2") is None  # key2 was evicted
         assert cache.get("key3") == "value3"
 
     def test_lru_promotion_on_set(self):
