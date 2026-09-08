@@ -38,7 +38,7 @@ def main() -> None:
     with comprehensive risk analysis and compliance reporting.
 
     Environment variables:
-      MELLEA_PROFILE=1  Enable cProfile profiling for any command (outputs top 40 functions by cumulative time).
+      MELLEA_PROFILE=1  Enable profiling for compile/run/certify (captures worker threads; outputs per-thread summary and top 40 functions by total time).
     """
 
 
