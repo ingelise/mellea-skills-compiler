@@ -197,7 +197,7 @@ async def _call_guardian(
                 idx: risk for idx, risk in failed_by_idx.items() if retry_verdicts[risk.name].label == GuardianScore.FAILED
             }
 
-        # Cache all terminal verdicts (YES/NO/ERROR after retries)
+        # Cache all terminal verdicts (YES/NO after retries)
         for risk_name, verdict in verdicts_by_name.items():
             if verdict.label in [GuardianScore.YES, GuardianScore.NO]:
                 _VERDICT_CACHE.set(_cache_key(risk_name, judged_text, hook_stage), verdict)
