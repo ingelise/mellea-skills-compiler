@@ -8,6 +8,7 @@
   <a href="#what-is-mellea-skills-compiler">What</a> &middot;
   <a href="#why">Why</a> &middot;
   <a href="#how-it-works">How</a> &middot;
+  <a href="#installation">Installation</a> &middot;
   <a href="#quick-start">Quick Start</a> &middot;
   <a href="#example-outputs">Examples</a> &middot;
   <a href="#next-steps">Next Steps</a> &middot;
@@ -63,13 +64,56 @@ agent specification        spec → typed pipeline                   Guardian ho
 
 **Step 1: Compile** — A `.md` specification is decomposed into a typed Mellea pipeline package: Pydantic schemas, `@generative` extraction slots, requirement validators, and multi-phase orchestration code. Two compilation paths are available: the `mellea-skills compile` CLI command, or the `/mellea-fy` command inside Claude Code. See [`examples/`](https://github.com/generative-computing/mellea-skills-compiler/tree/main/examples/) for pre-compiled examples.
 
-> **Backend Abstraction** — The compilation process uses a pluggable backend architecture. Currently, Claude Code and IBM Bob backends are supported (via `--backend claude` or `--backend bob`). The abstraction layer enables future support for alternative local LLMs.
+> **Backend Abstraction** — The compilation process uses a pluggable backend architecture. Currently, Claude Code, IBM Bob, and pi backends are supported (via `--backend claude`, `--backend bob`, or `--backend pi`). The abstraction layer enables future support for alternative local LLMs.
 
 **Step 2: Certify** — A single `mellea-skills certify` invocation performs end-to-end governance: AI Atlas Nexus identifies applicable risks from Granite Guardian, NIST AI RMF, and Credo UCF taxonomies and emits a `PolicyManifest`; Guardian hooks configured from that manifest monitor every `m.instruct()` call as fixtures execute; each governance requirement is classified as AUTOMATED, PARTIAL, or MANUAL based on runtime evidence; a compliance report and audit trail are written alongside the compiled pipeline.
 
-## Install
+## Installation
 
-Mellea Skills Compiler requires a backend to compile skills. You can use either **Claude Code** or **IBM Bob** — pick whichever you have access to and follow the corresponding setup below.
+**Jump to:** [Docker](#docker) · [Manual](#manual) · [Claude Setup](#claude-setup) · [IBM Bob](#ibm-bob) · [Pi Setup](#pi-setup) · [Project Code](#project-code)
+
+### Docker
+
+**Prerequisites:** Docker installed and running.
+
+**1. Build the image**
+
+```bash
+docker build -t mellea-skills-compiler:latest .
+```
+
+This will:
+- Install Claude Code (into `/home/user/.local/bin`)
+- Install IBM Bob shell (into `/user/local/bin`)
+- Install mellea-skills-compiler binary (`/usr/local/bin/mellea-skills`)
+- Copy `.claude/` and `.bob/` config into the container user's home directory.
+
+**2. Run the container**
+
+ - OLLAMA_HOST (e.g. `http://host.docker.internal:11434`) must be accessible from inside the container.
+ - Either ANTHROPIC_AUTH_TOKEN or ANTHROPIC_API_KEY is required.
+
+```bash
+docker run -it \
+  -e ANTHROPIC_BASE_URL \
+  -e ANTHROPIC_AUTH_TOKEN \
+  -e ANTHROPIC_API_KEY \
+  -e BOB_API_KEY \
+  -e OLLAMA_HOST=http://host.docker.internal:11434 \
+  -v ./skills:/skills \
+  mellea-skills-compiler:latest
+```
+
+A few things to note about this command:
+
+- **`-v ./skills:/skills`** is a *volume mount*: it links the `skills` folder in your current directory on your machine to the path `/skills` inside the container. Any files you place in `./skills` are immediately visible inside the container at `/skills`, and vice versa.
+- The container process runs as a non-root user (UID 1001) for security. If you encounter permission errors when writing output files back to a mounted directory, ensure the directory on your host is writable by UID 1001 (`chmod o+w ./skills`).
+
+Please follow the [**Quick Start**](#quick-start) guide below on how to run Mellea Skills Compiler.
+
+### Manual
+
+Mellea Skills Compiler requires a backend to compile skills. You can use **Claude Code**, **IBM Bob**, or **pi** — pick whichever you have access to and follow the corresponding setup below.
 
 ### Claude Setup
 
@@ -103,6 +147,34 @@ Mellea Skills Compiler requires a backend to compile skills. You can use either 
       export BOB_API_KEY = ""
       ```
 
+### Pi Setup
+
+> For a full walkthrough of provider options (direct Anthropic, LiteLLM proxy / AWS Bedrock, Ollama) and troubleshooting common errors (including the `eager_input_streaming` error on Bedrock), see **[Choosing a provider](docs/PI_SETUP.md#choosing-a-provider)** in `docs/PI_SETUP.md`.
+
+  1. The pi CLI is required to compile a Mellea skill with the pi backend. Install it via:
+
+      ```
+      npm install -g @earendil-works/pi-coding-agent
+      ```
+
+  2. Configure credentials for the provider pi will use. Either run `pi` and use `/login` to authenticate interactively, or set the provider's environment variable (below). Then verify the credentials resolve:
+
+      ```
+      pi auth check --provider <provider>   # prints "ready" when configured
+      ```
+
+      Alternatively set the provider's environment variable. For Anthropic, any of these work:
+
+      ```
+      export ANTHROPIC_API_KEY=""         # API key
+      export ANTHROPIC_OAUTH_TOKEN=""     # OAuth token
+      export ANTHROPIC_AUTH_TOKEN=""      # bearer token (e.g. behind a gateway)
+      ```
+
+      See pi's `docs/providers.md` for other providers and for loading keys from a secret manager.
+
+  3. Pass `--provider` (and `--model`) to choose the provider pi compiles with. Credentials must resolve for that provider, otherwise compilation fails up front. If pi accepts the credentials but the provider rejects them (e.g. an invalid key or token type), the compile error includes the provider's message. Custom providers, such as a proxy, go in `~/.pi/agent/models.json`; see [`docs/PI_SETUP.md`](docs/PI_SETUP.md#choosing-a-provider).
+
 ### Project Code
 
 Clone code repository
@@ -125,7 +197,7 @@ pip install -e .
 
 | Engine | Use Case | Deployment | Configuration | Characteristics |
 |--------|----------|-----------|---------------|-----------------|
-| **Ollama** | Development, testing, prototyping | Local workstation | `export OLLAMA_API_URL=<api-url>` (default: `http://localhost:11434`) | Lightweight, easy setup, minimal dependencies, no external services required |
+| **Ollama** | Development, testing, prototyping | Local workstation | `export OLLAMA_HOST=<api-url>` or `export OLLAMA_API_URL=<api-url>` (default: `http://localhost:11434`) | Lightweight, easy setup, minimal dependencies, no external services required |
 | **vLLM** | Production deployments, high-throughput | Local instance or hosted service | `export VLLM_API_URL_RISK_MODEL=<api-url>` and `export VLLM_API_URL_GUARDIAN_MODEL=<api-url>` | Optimized serving, dynamic batching, GPU acceleration, supports multiple model endpoints |
 
 **Engine Selection**: Specify via `--inference-engine` flag in `certify` and `run` commands. Engines are swappable without recompiling skills—risk identification and Guardian verdicts run on the selected backend transparently.
@@ -133,6 +205,12 @@ pip install -e .
 
 - For Ollama, set API URL in the environment variables:
 
+  **Note:** Set only one of these variables. `OLLAMA_HOST` takes precedence: if it is set, `OLLAMA_API_URL` is ignored.
+
+  ```bash
+  export OLLAMA_HOST=http://localhost:11434 # Ollama api URL
+  ```
+  OR
   ```bash
   export OLLAMA_API_URL=http://localhost:11434 # Ollama api URL
   ```
@@ -200,13 +278,19 @@ mellea-skills compile <Your-local-path>/skills/weather/spec.md
 mellea-skills compile <Your-local-path>/skills/weather
 ```
 
-The `--backend` flag allows you to specify which compilation backend to use (currently `claude` and `bob` are supported):
+The `--backend` flag allows you to specify which compilation backend to use (currently `claude`, `bob`, and `pi` are supported):
 ```bash
 # Explicit backend selection as claude
 mellea-skills compile <Your-local-path>/skills/weather/spec.md --backend claude
 
 # Explicit backend selection as bob
 mellea-skills compile <Your-local-path>/skills/weather/spec.md --backend bob
+
+# Explicit backend selection as pi
+mellea-skills compile <Your-local-path>/skills/weather/spec.md --backend pi
+
+# --provider is pi-only and defaults to 'anthropic' when omitted
+mellea-skills compile <Your-local-path>/skills/weather/spec.md --backend pi --provider ollama --model llama3
 
 # Uses 'claude' by default
 mellea-skills compile <Your-local-path>/skills/weather/spec.md
@@ -229,10 +313,10 @@ mellea-skills compile --repair-mode <Your-local-path>/skills/weather --model aws
 
 **Using Claude Code**
 
-Run `/mellea-fy` directly inside Claude Code:
+Run the `/mellea-fy` slash command inside a Claude Code session:
 
-```bash
-./mellea-fy <Your-local-path>/skills/weather/spec.md
+```
+/mellea-fy <Your-local-path>/skills/weather/spec.md
 ```
 
 **Using IBM Bob**
@@ -243,30 +327,78 @@ Run `/mellea-fy` directly inside Bob Shell:
 /mellea-fy <Your-local-path>/skills/weather/spec.md
 ```
 
-See [`mellea-fy/README.md`](https://github.com/generative-computing/mellea-skills-compiler/blob/main/mellea-fy/README.md) for detailed usage of the Claude Code command.
+See [`.claude/commands/README.md`](https://github.com/generative-computing/mellea-skills-compiler/blob/main/.claude/commands/README.md) for detailed usage of the `/mellea-fy` command.
+
+**Using pi**
+
+If you use the [pi](https://pi.dev) coding agent, you can compile from inside a
+pi session started at the root of your clone of this repo. Two sets of pi slash
+commands are available there (these are pi slash commands, not shell commands):
+
+- **`/mellea-fy*`** — prompt templates that ship with this repo in
+  `.pi/prompts/`. Pi loads them when you start it in the repo root and trust
+  the folder. No install needed.
+- **`/mellea-*`** — the pi extension in `extensions/pi/`, which runs
+  `compile`, `validate`, `run`, and `certify` as slash commands. It installs
+  its own copy of the compiler on first use, so you don't need the steps
+  above. Install it once from the repo root.
+
+```bash
+pi install ./extensions/pi
+pi
+```
+
+When pi starts, trust the folder if asked, and check that `mellea-skills.ts`
+is listed under `[Extensions]` in the startup banner. Type `/` to see both
+sets of commands. If you only see `/mellea-fy*`, the extension isn't loaded:
+run `pi list` to check it is installed.
+
+Then, **inside the pi session**, either run the `/mellea-fy` prompt directly,
+in your current pi session, as with Claude Code and IBM Bob above:
+
+```
+/mellea-fy skills/weather/spec.md
+```
+
+or use the extension commands:
+
+```
+/mellea-compile skills/weather/spec.md
+/mellea-validate skills/weather/weather_mellea
+```
+
+Paths are relative to the folder you started pi in, and the compiled package
+is written next to the spec (inside the clone, these show up as untracked files).
+
+`/mellea-compile` uses the pi backend and your session's model by default.
+This is a different feature from the `pi` **export target** below (compiled
+skill → pi-loadable `SKILL.md` bundle) — this extension runs the compiler
+*from inside* pi, the export target instead packages an already-compiled
+skill *for* pi. See [Using with pi](docs/PI_SETUP.md#pi-extension) for
+prerequisites, the first-run install, and known limitations.
 
 ### Run Skill Pipeline
 
-Run skill pipeline for a given fxiture
+Run a compiled skill pipeline against an input or a fixture. The examples below use the pre-compiled `examples/weather/weather_mellea`. After compiling `skills/weather/spec.md` yourself, `skills/weather/weather_mellea` works the same way.
 
 ```bash
 # provide a raw string as an input
-mellea-skills run <Your-local-path>/weather/weather_mellea --input "Whats the weather like in Dublin?"
+mellea-skills run examples/weather/weather_mellea --input "What's the weather like in Dublin?"
 
 # provide a JSON file as an input
-mellea-skills run <Your-local-path>/weather/weather_mellea --input file://<Your-local-path>/input.json
+mellea-skills run examples/weather/weather_mellea --input file://<Your-local-path>/input.json
 
 # provide input as stdin for each required parameters
-mellea-skills run <Your-local-path>/weather/weather_mellea --input -
+mellea-skills run examples/weather/weather_mellea --input -
 
 # provide a fixture name as an input
-mellea-skills run <Your-local-path>/weather/weather_mellea --fixture rain_check
+mellea-skills run examples/weather/weather_mellea --fixture rain_check_city
 
- # Block execution when Guardian detects risks (default: audit-only)
-mellea-skills run <Your-local-path>/weather/weather_mellea --enforce
+# Block execution when Guardian detects risks (default: audit-only)
+mellea-skills run examples/weather/weather_mellea --enforce
 
 # Skip Guardian checks even if a policy manifest exists.
-mellea-skills run <Your-local-path>/weather/weather_mellea --no-guardian
+mellea-skills run examples/weather/weather_mellea --no-guardian
 ```
 
 #### Input Format Examples
@@ -275,21 +407,21 @@ mellea-skills run <Your-local-path>/weather/weather_mellea --no-guardian
 
 For skills with a single parameter, you can pass a plain string directly:
 ```
-mellea-skills run skills/weather/weather_mellea --input "What's the weather like in Dublin?"
+mellea-skills run examples/weather/weather_mellea --input "What's the weather like in Dublin?"
 ```
 
 2. JSON String
 
-For skills with multiple parameters, pass a JSON object with parameter names as keys:
+Pass a JSON object with parameter names as keys. This is required for skills with more than one parameter. The weather pipeline takes a single `query` parameter:
 ```
-mellea-skills run skills/sentry/sentry_mellea --input '{"query": "What's the weather like in Dublin right now?"}'
+mellea-skills run examples/weather/weather_mellea --input '{"query": "What is the weather like in Dublin right now?"}'
 ```
 
 3. File Input (JSON)
 
 Use file:// prefix to read structured JSON from a file:
 ```
-mellea-skills run skills/weather/weather_mellea --input file://input.json
+mellea-skills run examples/weather/weather_mellea --input file://input.json
 ```
 input.json:
 ```
@@ -302,7 +434,7 @@ input.json:
 
 YAML files are also supported via file:// prefix:
 ```
-mellea-skills run skills/example/example_mellea --input file://input.yaml
+mellea-skills run examples/weather/weather_mellea --input file://input.yaml
 ```
 input.yaml:
 ```
@@ -313,7 +445,7 @@ query: What's the weather like in Dublin right now?
 
 Use - to prompt for each parameter interactively:
 ```bash
-mellea-skills run skills/weather/weather_mellea --input -
+mellea-skills run examples/weather/weather_mellea --input -
 # This will prompt:
 Enter query: What's the weather like in Dublin right now?
 ```
@@ -322,7 +454,7 @@ Enter query: What's the weather like in Dublin right now?
 
 Use a pre-defined fixture instead of --input:
 ```bash
-mellea-skills run skills/weather/weather_mellea --fixture current_weather_city
+mellea-skills run examples/weather/weather_mellea --fixture current_weather_city
 ```
 
 ### Run Full Certification Pipeline for Mellea skill
@@ -339,7 +471,7 @@ mellea-skills certify examples/weather/weather_mellea
 mellea-skills certify examples/weather/weather_mellea --enforce
 
 # Number of fixtures to evaluate for pipeline certification. Default is 3.
-mellea-skills certify examples/weather/weather_mellea --n_fixtures 4
+mellea-skills certify examples/weather/weather_mellea -n 4
 
 # Using Ollama risk model, guardian model and inference engine
 mellea-skills certify examples/weather/weather_mellea --risk-model granite4.1:3b --guardian-model ibm/granite3.3-guardian:8b --inference-engine ollama
@@ -354,6 +486,11 @@ Export a compiled Mellea skill to a deployment target - langgraph, claude-code, 
 
 **Note**: This command is experimental. Output structure and CLI interface may change in future releases without a deprecation period.
 
+**Note**: `--target pi` here packages a compiled skill *for* pi (a
+pi-loadable `SKILL.md` bundle) — this is different from the pi
+**extension** described under "Compile Agent Skill - Option 2" above, which
+runs the compiler *from inside* a pi session. The two are separate features.
+
 ```bash
 # Supported deployment target: mcp, langgraph, claude-code, pi
 mellea-skills export --target mcp <Your-local-path>/skills/weather/weather_mellea
@@ -364,16 +501,18 @@ mellea-skills export --target mcp --force <Your-local-path>/skills/weather/weath
 
 ### Certification artifacts
 
-All outputs are written to `audit/` adjacent to the compiled directory:
+Each `certify` run writes to a new timestamped directory under `audit/`, next to the compiled directory:
 
 ```
-skills/weather/audit/
+skills/weather/audit/<DD-MM-YYYY_HH-MM-SS>/
 ├── policy_manifest.json        # Policy manifest (risks + governance actions)
 ├── POLICY.md                   # Human-readable policy document
 ├── CERTIFICATION.md            # Certification report with coverage summary
 ├── audit_trail.jsonl           # Runtime Guardian verdicts
-└── pipeline_report.json        # Pipeline execution output
+└── fixture_results.json        # Fixture execution results
 ```
+
+`run` writes its outputs to `runs/<DD-MM-YYYY_HH-MM-SS>/` in the same place.
 
 ## Example Outputs
 

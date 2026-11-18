@@ -1,0 +1,41 @@
+{
+  "name": "@ibm/mellea-skills-compiler-pi",
+  "version": "0.1.0",
+  "description": "Pi extension for the Mellea Skills Compiler — /mellea-compile, /mellea-validate, /mellea-run, and /mellea-certify commands wrapping the mellea-skills CLI",
+  "keywords": [
+    "pi-package",
+    "mellea",
+    "skills",
+    "compiler"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/generative-computing/mellea-skills-compiler.git",
+    "directory": "extensions/pi"
+  },
+  "homepage": "https://github.com/generative-computing/mellea-skills-compiler/tree/main/extensions/pi",
+  "files": [
+    "extensions/",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test test/*.test.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^1.2.0"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  }
+}

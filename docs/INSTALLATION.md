@@ -1,10 +1,51 @@
 # Installation
 
-## Prerequisites
+**Jump to:** [Docker](#docker) · [Manual](#manual) · [Claude Setup](#claude-setup) · [IBM Bob](#ibm-bob) · [Pi](#pi) · [Project Code](#project-code)
 
-Mellea Skills Compiler requires a backend to compile skills. You can use either **Claude Code** or **IBM Bob** — pick whichever you have access to and follow the corresponding setup below.
+## Docker
 
-### Claude configuration
+**Prerequisites:** Docker installed and running.
+
+**1. Build the image**
+
+```bash
+docker build -t mellea-skills-compiler:latest .
+```
+
+This will:
+- Install Claude Code (into `/home/user/.local/bin`)
+- Install IBM Bob shell (into `/usr/local/bin`)
+- Install mellea-skills-compiler binary (`/usr/local/bin/mellea-skills`)
+- Copy `.claude/` and `.bob/` config into the container user's home directory.
+
+**2. Run the container**
+
+ - `OLLAMA_HOST` (e.g. `http://host.docker.internal:11434`) is required and must be accessible from inside the container.
+ - For Claude, `ANTHROPIC_BASE_URL` plus either `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` is required. For IBM Bob, `BOB_API_KEY` is required instead. The container exits at startup if neither is set.
+ - The image does not include pi. To use `--backend pi`, follow the [manual setup](#pi).
+
+```bash
+docker run -it \
+  -e ANTHROPIC_BASE_URL \
+  -e ANTHROPIC_AUTH_TOKEN \
+  -e ANTHROPIC_API_KEY \
+  -e BOB_API_KEY \
+  -e OLLAMA_HOST=http://host.docker.internal:11434 \
+  -v ./skills:/skills \
+  mellea-skills-compiler:latest
+```
+
+The container starts as UID 1001. Your local `skills` directory is mounted to `/skills` to access your skill specs inside the container.
+
+Please follow the [**Quick Start**](QUICK_START.md) guide on how to run Mellea Skills Compiler.
+
+## Manual
+
+### Prerequisites
+
+Mellea Skills Compiler requires a backend to compile skills. You can use **Claude Code**, **IBM Bob**, or **pi**. Pick whichever you have access to and follow the corresponding setup below.
+
+### Claude Setup
 
 Please ensure that the Claude Code is installed by following the guide here: https://code.claude.com/docs/en/quickstart
 
@@ -23,7 +64,7 @@ export ANTHROPIC_API_KEY = ""
 export ANTHROPIC_BASE_URL = ""
 ```
 
-### IBM Bob configuration
+### IBM Bob
 
 Please ensure that the IBM Bob shell is installed by following the guide here: https://bob.ibm.com/docs/shell/getting-started/install-and-setup. Only Bob v2.x.x is supported.
 
@@ -35,7 +76,18 @@ IBM Bob authentication works via IBMid, SSO and API key authentication. Please c
     export BOB_API_KEY = ""
     ```
 
-### Install project code
+### Pi
+
+The pi backend (`--backend pi`) needs Node.js 18 or later and the pi coding agent. pi 1.2.0 is the tested version:
+
+```bash
+npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.2.0
+pi --version
+```
+
+See [Using with pi](PI_SETUP.md#choosing-a-provider) to configure a provider (direct Anthropic, LiteLLM / Bedrock proxy, or Ollama).
+
+### Project Code
 
 Clone code repository
 
@@ -58,7 +110,7 @@ pip install -e .
 
 | Engine | Use Case | Deployment | Configuration | Characteristics |
 |--------|----------|-----------|---------------|-----------------|
-| **Ollama** | Development, testing, prototyping | Local workstation | `export OLLAMA_API_URL=<api-url>` (default: `http://localhost:11434`) | Lightweight, easy setup, minimal dependencies, no external services required |
+| **Ollama** | Development, testing, prototyping | Local workstation | `export OLLAMA_HOST=<api-url>` or `export OLLAMA_API_URL=<api-url>` (default: `http://localhost:11434`) | Lightweight, easy setup, minimal dependencies, no external services required |
 | **vLLM** | Production deployments, high-throughput | Local instance or hosted service | `export VLLM_API_URL_RISK_MODEL=<api-url>` and `export VLLM_API_URL_GUARDIAN_MODEL=<api-url>` | Optimized serving, dynamic batching, GPU acceleration, supports multiple model endpoints |
 
 **Engine Selection**: Specify via `--inference-engine` flag in `certify` and `run` commands. Engines are swappable without recompiling skills—risk identification and Guardian verdicts run on the selected backend transparently.
@@ -66,10 +118,15 @@ pip install -e .
 
 - For Ollama, set API URL in the environment variables:
 
+  **Note:** Set only one of these variables. `OLLAMA_HOST` takes precedence: if it is set, `OLLAMA_API_URL` is ignored.
+
+  ```bash
+  export OLLAMA_HOST=http://localhost:11434 # Ollama api URL
+  ```
+  OR
   ```bash
   export OLLAMA_API_URL=http://localhost:11434 # Ollama api URL
   ```
-
 - For online vLLM, set API URL and API KEY(optionally) in the environment variables:
 
   ```bash

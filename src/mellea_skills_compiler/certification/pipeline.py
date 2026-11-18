@@ -179,6 +179,11 @@ def run_pipeline(
                             guardian_model, inference_engine_type
                         ),
                     )
+                    import asyncio
+                    from mellea.plugins.manager import initialize_plugins
+
+                    asyncio.run(initialize_plugins(timeout=30))
+
                     guardian_plugin.register()
                     audit_plugin = AuditTrailPlugin(
                         log_path=run_dir / "audit_trail.jsonl",
@@ -188,8 +193,9 @@ def run_pipeline(
             except Exception as e:
                 console.print(
                     f"[yellow]Warning:[/] {str(e)}"
-                    f" Run [bold]mellea-skills ingest[/] or "
-                    f"[bold]mellea-skills certify[/] first for Guardian protection. "
+                    f" Certify this skill first for Guardian protection "
+                    f"([bold]certify[/] or [bold]ingest[/] in the CLI, "
+                    f"[bold]/mellea-certify[/] in pi). "
                 )
                 LOGGER.info("Running unguarded.")
 
@@ -360,6 +366,7 @@ def full_pipeline(
 
         # ── Step 3: Configure plugins from manifest ───────────────────────
         print()
+        
         LOGGER.info(
             "Configuring Guardian hooks from Policy Manifest...",
         )
@@ -368,7 +375,13 @@ def full_pipeline(
             manifest.risks,
             InferenceService.guardian_engine(guardian_model, inference_engine_type),
         )
+        import asyncio
+        from mellea.plugins.manager import initialize_plugins
+
+        asyncio.run(initialize_plugins(timeout=30)) 
+        
         guardian_plugin.register()
+        
         audit_plugin = AuditTrailPlugin(
             log_path=audit_dir / "audit_trail.jsonl", guardian_plugin=guardian_plugin
         )
@@ -428,9 +441,9 @@ def full_pipeline(
             LOGGER.info("=" * 70)
             LOGGER.info("Total: %d", len(fixture_results))
 
-            LOGGER.info(f"Passed: {fixture_summary["success"]}")
-            LOGGER.info(f"Blocked (Risk detected): {fixture_summary["blocked"]}")
-            LOGGER.info(f"Failed: {fixture_summary["failed"]}")
+            LOGGER.info(f"Passed: {fixture_summary['success']}")
+            LOGGER.info(f"Blocked (Risk detected): {fixture_summary['blocked']}")
+            LOGGER.info(f"Failed: {fixture_summary['failed']}")
             LOGGER.info(f"Fixture Results: {fixture_results_path}")
 
             if len(fixture_results) == fixture_summary["failed"]:

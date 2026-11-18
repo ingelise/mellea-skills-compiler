@@ -29,6 +29,7 @@ from mellea_skills_compiler.compile.backend import (
     CompilationContext,
     CompilationResult,
 )
+from mellea_skills_compiler.compile.metadata import CompileMetadata
 from mellea_skills_compiler.enums import BOBMessageType
 from mellea_skills_compiler.toolkit.logging import configure_logger
 
@@ -165,6 +166,9 @@ class BOBBackend:
                 f"\n[green]{'Repairing' if context.repair_mode else 'Compiling'} using {self.name()}\n"
             )
 
+            # Record the chosen compilation backend in compile metadata
+            CompileMetadata.record_backend(backend=self.identifier())
+
             if context.model:
                 LOGGER.warning(
                     f"The '--model:{context.model}' value will be ignored for compilation. "
@@ -241,7 +245,7 @@ class BOBBackend:
                                 response["stats"]["duration_ms"] / 1000, 60
                             )
                             console.print(
-                                f"[cyan]Status: {response.get("status")}[/]\n"
+                                f"[cyan]Status: {response.get('status')}[/]\n"
                                 f"[cyan]Total Time ⏱️: {int(mins)}m {int(secs)}s.[/]\n"
                             )
                     except json.decoder.JSONDecodeError as e:

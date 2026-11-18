@@ -21,6 +21,7 @@ from mellea_skills_compiler.compile.grounding import (
     write_mellea_api_ref,
     write_mellea_doc_index,
 )
+from mellea_skills_compiler.compile.metadata import CompileMetadata
 from mellea_skills_compiler.compile.writers.renderer import render_writers
 from mellea_skills_compiler.enums import SpecFileFormat
 from mellea_skills_compiler.toolkit.file_utils import (
@@ -202,6 +203,7 @@ def compile(
     skill_backend: Optional[str] = None,
     skill_model: Optional[str] = None,
     backend: str = "claude",
+    provider: Optional[str] = None,
 ) -> None:
     """Compile an agent specification into a Mellea skill package.
 
@@ -240,6 +242,10 @@ def compile(
         backend (str, optional): Compilation backend identifier used to look up
             the backend implementation from the global registry (e.g.
             ``"claude"``, ``"bob"``). Defaults to "claude".
+        provider (Optional[str], optional): Provider identifier passed to the
+            *compilation* backend when it supports provider selection
+            (pi-only currently, e.g. "anthropic", "ollama"). Ignored by
+            backends that don't support it. Defaults to None.
 
     Raises:
         RuntimeError: If the requested backend is unavailable or if compilation
@@ -250,9 +256,15 @@ def compile(
     # clears screen
     console.clear()
 
+    # Capture incoming compilation arguments before defining any local variables
+    input_parameters = locals().copy()
+
     # Get the backend implementation and validate its environment
     backend_impl: CompilationBackend = global_registry.get_backend(identifier=backend)
-    is_valid, error_msg = backend_impl.validate_environment()
+    if backend == "pi":
+        is_valid, error_msg = backend_impl.validate_environment(provider=provider)
+    else:
+        is_valid, error_msg = backend_impl.validate_environment()
     if not is_valid:
         raise RuntimeError(f"Provided backend '{backend}' not available - {error_msg}")
 
@@ -309,6 +321,11 @@ def compile(
     # Derive mellea package name from the spec frontmatter
     mellea_package_name = _derive_mellea_package_name(spec_path, spec_frontmatter)
     mellea_package_dir = spec_dir / mellea_package_name
+    mellea_package_dir.mkdir(parents=True, exist_ok=True)
+
+    # Initialize compile metadata tracking and record invocation arguments
+    CompileMetadata.init(mellea_package_dir)
+    CompileMetadata.record_args(**input_parameters)
 
     # Rule OUT-6 — mirror companion directories from skill root into the
     # package directory BEFORE invoking mellea-fy. This is deterministic
@@ -381,6 +398,7 @@ def compile(
         skill_model=chosen_model_id,
         defaults_source=defaults_source,
         refresh_cache=refresh_cache,
+        provider=provider,
     )
 
     result: CompilationResult = backend_impl.compile(context)
@@ -388,17 +406,29 @@ def compile(
         raise RuntimeError(f"Compilation failed - {result.error_message}")
     LOGGER.info("Backend compilation completed successfully")
 
-    # Post-compile: render writers, validate, copy spec file
+    # Post-compile: record melleafy step, copy spec, render companion files, and validate
     try:
+        # Resolve output directory and copy original spec for reference/distribution
         mellea_dir: Path = _select_canonical_mellea_dir(spec_dir, mellea_package_name)
+
+        # Capture melleafy data in compile metadata
+        CompileMetadata.record_melleafy(mellea_dir)
+
         if spec_md_path:
             shutil.copy(spec_md_path, mellea_dir / SpecFileFormat.SKILL_FILE_MD)
+
+        # Render deterministic files (fixtures and configs)
         render_writers(mellea_dir, enforce=True)
+
+        # Run structural lints and optional smoke-check tests
         validate(mellea_dir, no_run=skip_smoke_check, all_fixtures=False)
     except Exception as e:
         raise RuntimeError(
             f"Compilation failed with backend '{backend}': {str(e)}"
         ) from e
+
+    # Record final compile completion timestamp
+    CompileMetadata.record_completion()
 
     console.print(
         f"\nMelleafy {'Repair' if repair_mode else 'Compile'} completed successfully.\n"

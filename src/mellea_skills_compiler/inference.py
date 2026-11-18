@@ -8,8 +8,10 @@ from mellea_skills_compiler.enums import (
 )
 
 
-OLLAMA_API_URL: Optional[str] = os.environ.get(
-    "OLLAMA_API_URL", "http://localhost:11434"
+OLLAMA_API_URL: str = (
+    os.environ.get("OLLAMA_HOST")
+    or os.environ.get("OLLAMA_API_URL")
+    or "http://localhost:11434"
 )
 VLLM_API_URL_RISK_MODEL: Optional[str] = os.environ.get("VLLM_API_URL_RISK_MODEL", None)
 VLLM_API_URL_GUARDIAN_MODEL: Optional[str] = os.environ.get(
@@ -40,8 +42,18 @@ class InferenceService:
         model_name_or_path: Optional[str] = None,
         inference_engine_type: Optional[InferenceEngineType] = None,
     ):
+
+        service: InferenceService = InferenceService(inference_engine_type)
         return InferenceService(inference_engine_type).risk(
-            model_name_or_path, parameters={"temperature": 0}
+            model_name_or_path,
+            parameters=(
+                # Ollama requires num_ctx to be set explicitly per request to control the
+                # context window size. vLLM does not need it here because the context length
+                # is configured once at serve time via --max-model-len.
+                {"temperature": 0, "num_ctx": 16384}
+                if service.inference_engine_type == InferenceEngineType.OLLAMA
+                else {"temperature": 0}
+            ),
         )
 
     @classmethod
@@ -54,7 +66,10 @@ class InferenceService:
         return service.guardian(
             model_name_or_path,
             parameters=(
-                {"temperature": 0, "num_ctx": 1024, "think": False}
+                # Ollama requires num_ctx to be set explicitly per request to control the
+                # context window size. vLLM does not need it here because the context length
+                # is configured once at serve time via --max-model-len.
+                {"temperature": 0, "num_ctx": 8192, "num_predict": 1024, "think": False}
                 if service.inference_engine_type == InferenceEngineType.OLLAMA
                 else {"temperature": 0, "max_tokens": 1024}
             ),

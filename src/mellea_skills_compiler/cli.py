@@ -7,11 +7,13 @@ from typing import Annotated, Literal, Optional
 import typer
 from typer.main import Typer
 
+import mellea_skills_compiler
 from mellea_skills_compiler.enums import (
     GuardianMode,
     InferenceEngineType,
 )
 from mellea_skills_compiler.toolkit.logging import configure_logger
+from mellea_skills_compiler.toolkit.profiling import profile_if_enabled
 
 
 app: Typer = typer.Typer(no_args_is_help=True)
@@ -35,13 +37,17 @@ def main() -> None:
 
     Transform AI agent skill specifications into certified, governed pipelines
     with comprehensive risk analysis and compliance reporting.
+
+    Environment variables:
+      MELLEA_PROFILE=1  Enable profiling for compile/run/certify (captures worker threads; outputs per-thread summary and top 40 functions by total time).
     """
 
 
 @app.command(
     help="Melleafy Compile: Decompose an Agent Spec into Mellea Code",
-    epilog="Compile Mellea skill specification into a Mellea pipeline. Use --backend to select compilation backend [claude, bob].",
+    epilog="Compile Mellea skill specification into a Mellea pipeline. Use --backend to select compilation backend [claude, bob, pi].",
 )
+@profile_if_enabled
 def compile(
     ctx: typer.Context,
     spec_path: Annotated[
@@ -109,9 +115,19 @@ def compile(
         typer.Option(
             "--backend",
             "-b",
-            help="Compilation backend to use ['claude', 'bob'].",
+            help="Compilation backend to use ['claude', 'bob', 'pi'].",
         ),
     ] = "claude",
+    provider: Annotated[
+        Optional[str],
+        typer.Option(
+            "--provider",
+            help="Provider for the pi compilation backend (e.g. 'anthropic', "
+            "'ollama'). Only used with --backend pi; ignored otherwise. "
+            "Defaults to pi's defaultProvider when not set. Without --model, "
+            "pi's defaultModel is used, and with it its defaultProvider.",
+        ),
+    ] = None,
 ) -> None:
     """
     Compile Mellea skill specification into a Mellea pipeline using mellea-fy Claude command.
@@ -134,6 +150,7 @@ def compile(
             skill_backend=skill_backend,
             skill_model=skill_model,
             backend=backend,
+            provider=provider,
         )
     except Exception as e:
         LOGGER.error(str(e))
@@ -184,6 +201,7 @@ def validate(
 
 
 @app.command(help="Run Mellea Skill Pipeline")
+@profile_if_enabled
 def run(
     ctx: typer.Context,
     pipeline_dir: Annotated[
@@ -320,6 +338,7 @@ def ingest(
 
 
 @app.command(help="Run Full Certification Pipeline for Mellea skill")
+@profile_if_enabled
 def certify(
     ctx: typer.Context,
     pipeline_dir: Annotated[
@@ -457,6 +476,12 @@ def export(
     except Exception as e:
         LOGGER.error(f"Export command failed - {str(e)}")
         raise typer.Exit(code=1)
+
+
+@app.command(help="Mellea Skills Compiler Version")
+def version(ctx: typer.Context):
+    """Print the installed mellea-skills-compiler package version."""
+    print(mellea_skills_compiler.__version__)
 
 
 if __name__ == "__main__":

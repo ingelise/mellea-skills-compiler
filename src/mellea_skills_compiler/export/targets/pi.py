@@ -223,6 +223,10 @@ def _guardian_inline_snippet(enforce: bool = False) -> str:
         "        manifest.risks,\n"
         "        InferenceService.guardian_engine(),\n"
         "    )\n"
+        "    import asyncio\n"
+        "    from mellea.plugins.manager import initialize_plugins\n"
+        "\n"
+        "    asyncio.run(initialize_plugins(timeout=30))  # wait for plugin manager before registering\n"
         "    guardian_plugin.register()\n"
         "    audit_dir: Path = adapter_dir / 'audit'\n"
         "    try:\n"
@@ -445,7 +449,8 @@ def _skill_md_arg_note(sig: "ParsedSignature", modality: str) -> str:
 def _render_pyproject_toml(
     *, skill_name: str, package_name: str, has_policy_manifest: bool = False
 ) -> str:
-    deps = ['    "mellea[hooks]>=0.3.2",\n']
+    from mellea_skills_compiler.constants import MELLEA_PIN
+    deps = [f'    "{MELLEA_PIN}",\n']
     if has_policy_manifest:
         deps.append(
             '    "mellea-skills-compiler@git+https://github.com/generative-computing/mellea-skills-compiler.git",\n'

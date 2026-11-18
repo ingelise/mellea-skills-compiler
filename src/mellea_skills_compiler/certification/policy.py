@@ -3,7 +3,7 @@
 from collections import defaultdict
 from logging import Logger
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import List, Optional
 
 from mellea_skills_compiler.enums import (
     GovernanceTaxonomy,
@@ -14,6 +14,11 @@ from mellea_skills_compiler.toolkit.logging import configure_logger
 
 
 LOGGER: Logger = configure_logger()
+
+
+def guardian_criteria_id(tag: str) -> str:
+    """Convert a Nexus tag (``unethical-behavior``) to a Guardian criteria id (``unethical_behavior``)."""
+    return tag.strip().replace("-", "_")
 
 
 def _get_fail_safe_risks() -> List[NexusRisk]:
@@ -61,7 +66,8 @@ def generate_policy_manifest(
         zero_shot_only=True,
     )
 
-    identified_risks = risk_lists.get("risks", [])
+    per_usecase = risk_lists.get("per_usecase") or []
+    identified_risks = per_usecase[0].get("risks", []) if per_usecase else []
     LOGGER.info(f"AI Atlas Nexus risks: {len(identified_risks)}")
 
     risks: list[NexusRisk] = []
@@ -72,7 +78,7 @@ def generate_policy_manifest(
 
         # sort the risks, granite guardian and other
         if risk.isDefinedByTaxonomy == GovernanceTaxonomy.IBM_GRANITE_GUARDIAN:
-            guardian_prompt = risk.tag if risk.tag else guardian_prompt
+            guardian_prompt = guardian_criteria_id(risk.tag) if risk.tag else guardian_prompt
             is_native: bool = True if risk.tag else False
             risks.append(
                 NexusRisk(
