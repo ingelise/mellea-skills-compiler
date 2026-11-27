@@ -15,7 +15,7 @@ End-to-end demonstration:
 import json
 import random
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from datetime import datetime
 from logging import Logger
 from pathlib import Path
@@ -29,6 +29,7 @@ from mellea_skills_compiler.certification.classification import (
     classify_governance_requirements,
 )
 from mellea_skills_compiler.certification.data import get_data_path
+from mellea_skills_compiler.certification.exceptions import CertificationInterrupted
 from mellea_skills_compiler.certification.input_resolver import resolve_input
 from mellea_skills_compiler.certification.policy import (
     generate_policy_manifest,
@@ -41,6 +42,8 @@ from mellea_skills_compiler.certification.report import (
 )
 from mellea_skills_compiler.enums import (
     GuardianMode,
+    GuardianScore,
+    HookStage,
     InferenceEngineType,
     NexusRiskSource,
     SpecFileFormat,
@@ -95,6 +98,49 @@ def _run_single_fixture(pipeline_fn: Callable, fixture: Fixture):
         return FixtureResult.failed(fixture=fixture, e=e)
 
     return FixtureResult.success(fixture=fixture, output=output)
+
+
+def _guardian_inconclusive(verdicts: List[GuardianVerdict]) -> bool:
+    """True when post-generation verdicts exist but none produced a Yes/No label.
+
+    Mirrors the rule in ``report._extract_guardian_evidence`` so the exit status
+    and CERTIFICATION.md agree. Pre/tool-stage verdicts are deliberately ignored.
+    """
+    post = [v for v in verdicts if v.hook_stage == HookStage.POST]
+    return bool(post) and not any(
+        v.label in (GuardianScore.YES, GuardianScore.NO) for v in post
+    )
+
+
+def _run_fixtures(
+    pipeline_fn: Callable[..., Any], fixtures: List[Fixture]
+) -> List[FixtureResult]:
+    executor = ThreadPoolExecutor()
+    futures: List[Future[FixtureResult]] = []
+    try:
+        for fixture in fixtures:
+            futures.append(executor.submit(_run_single_fixture, pipeline_fn, fixture))
+        fixture_results = []
+        pending = set(futures)
+        while pending:
+            try:
+                # Keep the wait bounded so Python can dispatch signal handlers.
+                for future in as_completed(fs=pending, timeout=0.1):
+                    pending.remove(future)
+                    fixture_results.append(future.result())
+            except TimeoutError:
+                continue
+    except CertificationInterrupted:
+        for future in futures:
+            future.cancel()
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    except BaseException:
+        executor.shutdown(wait=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
+        return fixture_results
 
 
 def run_pipeline(
@@ -180,6 +226,7 @@ def run_pipeline(
                         ),
                     )
                     import asyncio
+
                     from mellea.plugins.manager import initialize_plugins
 
                     asyncio.run(initialize_plugins(timeout=30))
@@ -366,7 +413,7 @@ def full_pipeline(
 
         # ── Step 3: Configure plugins from manifest ───────────────────────
         print()
-        
+
         LOGGER.info(
             "Configuring Guardian hooks from Policy Manifest...",
         )
@@ -376,12 +423,13 @@ def full_pipeline(
             InferenceService.guardian_engine(guardian_model, inference_engine_type),
         )
         import asyncio
+
         from mellea.plugins.manager import initialize_plugins
 
-        asyncio.run(initialize_plugins(timeout=30)) 
-        
+        asyncio.run(initialize_plugins(timeout=30))
+
         guardian_plugin.register()
-        
+
         audit_plugin = AuditTrailPlugin(
             log_path=audit_dir / "audit_trail.jsonl", guardian_plugin=guardian_plugin
         )
@@ -405,23 +453,11 @@ def full_pipeline(
         LOGGER.info("  - Audit Trail checks every end points (pre + post).")
 
         # run input fixtures
-        fixture_results: List[FixtureResult] = []
         try:
-            with ThreadPoolExecutor() as executor:
-
-                # Submit all fixtures
-                future_to_fixture = {
-                    executor.submit(_run_single_fixture, pipeline_fn, f): f
-                    for f in sample_fixtures
-                }
-
-                # Collect results as they complete
-                for future in as_completed(fs=future_to_fixture):
-                    fixture: Fixture = future_to_fixture[future]
-                    fixture_result: FixtureResult = future.result(timeout=300)
-                    fixture_results.append(fixture_result)
-
-                LOGGER.info(f"✓ Executed {len(sample_fixtures)} fixture(s)")
+            fixture_results: List[FixtureResult] = _run_fixtures(
+                pipeline_fn, sample_fixtures
+            )
+            LOGGER.info(f"✓ Executed {len(sample_fixtures)} fixture(s)")
         except Exception as e:
             raise RuntimeError(
                 f"✗ Fixtures execution failed with error: {str(e)}"
@@ -587,8 +623,26 @@ def full_pipeline(
             LOGGER.warning("STATUS: RISK ASSESSMENT FAILURE — review audit trail")
         if has_flagged:
             LOGGER.warning("STATUS: RISKS DETECTED — review audit trail")
-        if not (has_flagged or has_failed):
+        if not verdict_summary["all_verdicts"]:
+            LOGGER.warning(
+                "STATUS: NO GUARDIAN CHECKS RAN — no verdicts were recorded "
+                "(the skill may have made no LLM generations); risk status is unknown"
+            )
+        elif not (has_flagged or has_failed):
             LOGGER.info("ALL STATUS CHECKS PASSED")
+
+        if _guardian_inconclusive(verdict_summary["all_verdicts"]):
+            message = (
+                "🔴 All Guardian checks failed to produce a usable verdict. "
+                "Certification is inconclusive — see CERTIFICATION.md and logs."
+            )
+            LOGGER.error(message)
+            return RunResult.failed(
+                run_dir=audit_dir,
+                input_parameters=input_parameters,
+                guardian_verdicts=verdict_summary,
+                error_details={"type": "Guardian", "message": message},
+            )
 
         # Return RunResult with the summary of the run
         return RunResult.success(
